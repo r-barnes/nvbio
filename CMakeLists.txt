@@ -91,7 +91,7 @@ set(INCLUDE_DIRS
 
 include_directories(${NVBIO_SOURCE_ROOT})
 include_directories("${NVBIO_SOURCE_ROOT}/contrib")
-#include_directories("${CMAKE_BINARY_DIR}/contrib/zlib-1.2.7")
+include_directories("${CMAKE_BINARY_DIR}/contrib/zlib-1.2.7")
 include_directories("${NVBIO_SOURCE_ROOT}/contrib/crc")
 include_directories("${NVBIO_SOURCE_ROOT}/contrib/bamtools")
 include_directories(SYSTEM "${NVBIO_SOURCE_ROOT}/contrib/moderngpu/include")
@@ -109,7 +109,7 @@ add_subdirectory(contrib/lz4)
 add_subdirectory(contrib/crc)
 add_subdirectory(contrib/bamtools)
 add_subdirectory(contrib/moderngpu)
-#add_subdirectory(contrib/htslib)
+add_subdirectory(contrib/htslib)
 
 add_subdirectory(nvbio)
 add_subdirectory(nvbio-test)
