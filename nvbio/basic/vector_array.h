@@ -342,6 +342,10 @@ struct HostVectorArray
     ///
     uint32 size() const { return m_index.size(); }
 
+    /// return the size of the given array
+    ///
+    uint32 size(const uint32 index) const { return m_sizes[index]; }
+
     /// return allocated size
     ///
     uint32 allocated_size() const { return m_pool[0]; }
