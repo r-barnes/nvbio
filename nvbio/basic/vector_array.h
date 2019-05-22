@@ -293,6 +293,10 @@ struct HostVectorArray
     ///
     HostVectorArray() : m_pool(1,0) {}
 
+    HostVectorArray(const DeviceVectorArray<T>& vec){
+        *this = vec;
+    }
+
     /// resize the arena
     ///
     /// \param size      size of the array (i.e. number of vectors)
