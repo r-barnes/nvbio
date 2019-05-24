@@ -372,8 +372,11 @@ struct sw_alignment_score_dispatch
         text_cache_type text_cache( &text_cache_storage[0] );
 
         // load first band of text
-        for (uint32 j = 0; j < BAND_LEN-1; ++j)
+        printf("Cheese\n");
+        for (uint32 j = 0; j < BAND_LEN-1; ++j){
             text_cache[j] = text[start+window_begin+j];
+            printf("%d\n",text_cache[j]);
+        }
 
         const score_type G = scoring.deletion();
         const score_type I = scoring.insertion();

@@ -416,12 +416,19 @@ void BatchedBandedAlignmentTraceback<BAND_LEN,CHECKPOINTS,stream_type,DeviceThre
     const uint32 max_pattern_len = stream.max_pattern_length();
     const uint32 max_text_len    = stream.max_text_length();
     const uint32 queue_capacity  = uint32( temp_size / element_storage( max_pattern_len, max_text_len ) );
-
     const uint64 checkpoints_size = checkpoint_storage( max_pattern_len, max_text_len );
+
+    printf("stream size      = %d\n",stream.size());
+    printf("max_pattern_len  = %d\n",max_pattern_len);
+    printf("max_text_len     = %d\n",max_text_len);
+    printf("queue_capacity   = %d\n",queue_capacity);
+    printf("checkpoints_size = %d\n",checkpoints_size);
 
     if (queue_capacity >= stream.size())
     {
         const uint32 n_blocks = (stream.size() + BLOCKDIM-1) / BLOCKDIM;
+        printf("BLOCKDIM = %d", BLOCKDIM);
+        printf("n_blocks = %d", n_blocks);
 
         cell_type* checkpoints = (cell_type*)(temp);
         uint32*    submatrices = (uint32*)   (temp + checkpoints_size * stream.size());
