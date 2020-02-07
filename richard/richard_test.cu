@@ -141,45 +141,6 @@ struct AlignmentStream
     int16*                      m_scores;
 };
 
-// A simple kernel to test the speed of alignment without the possible overheads of the BatchAlignmentScore interface
-//
-template <uint32 BLOCKDIM, uint32 MAX_REF_LEN, typename aligner_type, typename score_type>
-__global__ void alignment_test_kernel(const aligner_type aligner, const uint32 N_probs, const uint32 M, const uint32 N, const uint32* strptr, const uint32* refptr, score_type* score)
-{
-    const uint32 tid = blockIdx.x * BLOCKDIM + threadIdx.x;
-
-    typedef lmem_cache_tag_type                                                 lmem_cache_type;
-    typedef nvbio::cuda::ldg_pointer<uint32>                                    storage_iterator;
-
-    typedef nvbio::PackedStringLoader<storage_iterator,4,false,lmem_cache_type>     pattern_loader_type;
-    typedef typename pattern_loader_type::input_iterator                            uncached_pattern_iterator;
-    typedef typename pattern_loader_type::iterator                                  pattern_iterator;
-    typedef nvbio::vector_view<pattern_iterator>                                    pattern_string;
-
-    typedef nvbio::PackedStringLoader<storage_iterator,2,false,lmem_cache_type>     text_loader_type;
-    typedef typename text_loader_type::input_iterator                               uncached_text_iterator;
-    typedef typename text_loader_type::iterator                                     text_iterator;
-    typedef nvbio::vector_view<text_iterator>                                       text_string;
-
-    pattern_loader_type pattern_loader;
-    pattern_string pattern = pattern_string( M, pattern_loader.load( uncached_pattern_iterator( strptr ) + tid * M, tid < N_probs ? M : 0u ) );
-
-    text_loader_type text_loader;
-    text_string text = text_string( N, text_loader.load( uncached_text_iterator( refptr ) + tid * N, tid < N_probs ? N : 0u ) );
-
-    aln::BestSink<int32> sink;
-
-    aln::alignment_score<MAX_REF_LEN>(
-        aligner,
-        pattern,
-        aln::trivial_quality_string(),
-        text,
-        Field_traits<int32>::min(),
-        sink );
-
-    score[tid] = sink.score;
-}
-
 //
 // A class for making a single alignment test, testing both scoring and traceback
 //
@@ -254,20 +215,30 @@ struct SingleTest
     }
 };
 
-// execute a given batch alignment type on a given stream
+// execute and time the batch_banded_score<scheduler> algorithm for all possible schedulers
 //
-// \tparam batch_type               a \ref BatchAlignment "Batch Alignment"
-// \tparam stream_type              a stream compatible to the given batch_type
-//
-// \return                          average time
-//
-template <typename batch_type, typename stream_type>
-float enact_batch(
-          batch_type&               batch,
-    const stream_type&              stream,
-    const uint32                    n_tests,
-    const uint32                    n_tasks)
+template <uint32 BAND_LEN, uint32 N, uint32 M, typename aligner_type>
+void batch_banded_score_profile_all(
+    const aligner_type              aligner,
+    const uint32                    n_tasks,
+    thrust::device_vector<uint32>&  pattern_dvec,
+    thrust::device_vector<uint32>&  text_dvec,
+    thrust::device_vector<int16>&   score_dvec)
 {
+    // create a stream
+    typedef AlignmentStream<aligner_type,M,N> stream_type;
+    stream_type stream(
+        aligner,
+        n_tasks,
+        nvbio::raw_pointer( pattern_dvec ),
+        nvbio::raw_pointer( text_dvec ),
+        nvbio::raw_pointer( score_dvec ) );
+
+    // setup a batch
+    //TODO: Can also use: DeviceStagedThreadScheduler. Maybe also DeviceWarpScheduler?
+    typedef aln::BatchedBandedAlignmentScore<BAND_LEN,stream_type, DeviceThreadScheduler> batch_type;
+    batch_type batch;
+
     // alloc all the needed temporary storage
     const uint64 temp_size = batch_type::max_temp_storage(
         stream.max_pattern_length(),
@@ -278,75 +249,13 @@ float enact_batch(
 
     Timer timer;
     timer.start();
-
-    for (uint32 i = 0; i < n_tests; ++i)
-    {
-        // enact the batch
-        batch.enact( stream, temp_size, nvbio::raw_pointer( temp_dvec ) );
-
-        cudaDeviceSynchronize();
-    }
-
+    batch.enact( stream, temp_size, nvbio::raw_pointer( temp_dvec ) );
+    cudaDeviceSynchronize();
     timer.stop();
 
-    return timer.seconds() / float(n_tests);
-}
+    const float time = timer.seconds();
 
-// execute and time a batch of banded alignments using BatchBandedAlignmentScore
-//
-template <uint32 BAND_LEN, typename scheduler_type, uint32 N, uint32 M, typename stream_type>
-void batch_banded_score_profile(
-    const stream_type               stream,
-    const uint32                    n_tests,
-    const uint32                    n_tasks)
-{
-    typedef aln::BatchedBandedAlignmentScore<BAND_LEN,stream_type, scheduler_type> batch_type;  // our batch type
-
-    // setup a batch
-    batch_type batch;
-
-    const float time = enact_batch(
-        batch,
-        stream,
-        n_tests,
-        n_tasks );
-
-    fprintf(stderr,"  %5.1f", 1.0e-9f * float(n_tasks*uint64(BAND_LEN*M))*(float(n_tests)/time) );
-}
-// execute and time the batch_banded_score<scheduler> algorithm for all possible schedulers
-//
-template <uint32 BAND_LEN, uint32 N, uint32 M, typename aligner_type>
-void batch_banded_score_profile_all(
-    const aligner_type              aligner,
-    const uint32                    n_tests,
-    const uint32                    n_tasks,
-    thrust::device_vector<uint32>&  pattern_dvec,
-    thrust::device_vector<uint32>&  text_dvec,
-    thrust::device_vector<int16>&   score_dvec)
-{
-    typedef AlignmentStream<aligner_type,M,N> stream_type;
-
-    // create a stream
-    stream_type stream(
-        aligner,
-        n_tasks,
-        nvbio::raw_pointer( pattern_dvec ),
-        nvbio::raw_pointer( text_dvec ),
-        nvbio::raw_pointer( score_dvec ) );
-
-    // test the DeviceThreadScheduler
-    batch_banded_score_profile<BAND_LEN,DeviceThreadScheduler,N,M>(
-        stream,
-        n_tests,
-        n_tasks );
-
-    // test the DeviceStagedThreadScheduler
-    batch_banded_score_profile<BAND_LEN,DeviceStagedThreadScheduler,N,M>(
-        stream,
-        n_tests,
-        n_tasks );
-
-    // TODO: test DeviceWarpScheduler
+    fprintf(stderr,"  %5.1f", 1.0e-9f * float(n_tasks*uint64(BAND_LEN*M))*(1/time) );
     fprintf(stderr, " GCUPS\n");
 }
 
@@ -354,91 +263,40 @@ void batch_banded_score_profile_all(
 
 int main(int argc, char* argv[])
 {
-                     uint32 n_tests          = 1;
     NVBIO_VAR_UNUSED uint32 N_WARP_TASKS     = 4096;
                      uint32 N_THREAD_TASKS   = 128*1024;
 
-    for (int i = 0; i < argc; ++i)
-    {
-        if (strcmp( argv[i], "-N-thread-tasks" ) == 0)
-            N_THREAD_TASKS = atoi( argv[++i] );
-        else if (strcmp( argv[i], "-N-warp-tasks" ) == 0)
-            N_WARP_TASKS = atoi( argv[++i] );
-        else if (strcmp( argv[i], "-N-tests" ) == 0)
-            n_tests = atoi( argv[++i] );
-    }
-
     fprintf(stderr,"testing alignment... started\n");
 
-    {
-        NVBIO_VAR_UNUSED const uint32 BLOCKDIM = 128;
-        const uint32 M = 7;
-        const uint32 N = 20;
+    const uint32 BAND_LEN = 15u;
+    const uint32 N_TASKS  = N_THREAD_TASKS;
+    const uint32 M = 150;
+    const uint32 N = M+BAND_LEN;
 
-        thrust::host_vector<uint8> str_hvec( M );
-        thrust::host_vector<uint8> ref_hvec( N );
+    const uint32 M_WORDS = (M + 7)  >> 3;
+    const uint32 N_WORDS = (N + 15) >> 4;
 
-        uint8* str_hptr = nvbio::raw_pointer( str_hvec );
-        uint8* ref_hptr = nvbio::raw_pointer( ref_hvec );
+    thrust::host_vector<uint32> str( M_WORDS * N_TASKS );
+    thrust::host_vector<uint32> ref( N_WORDS * N_TASKS );
 
-        string_to_dna("ACAACTA", str_hptr);
-        string_to_dna("AAACACCCTAACACACTAAA", ref_hptr);
+    LCG_random rand;
+    fill_packed_stream<4u>( rand, 4u, M * N_TASKS, nvbio::raw_pointer( str ) );
+    fill_packed_stream<2u>( rand, 4u, N * N_TASKS, nvbio::raw_pointer( ref ) );
 
-        SingleTest test;
-        nvbio::cuda::thrust_copy_vector(test.str_hvec, str_hvec);
-        nvbio::cuda::thrust_copy_vector(test.ref_hvec, ref_hvec);
-        nvbio::cuda::thrust_copy_vector(test.str_dvec, str_hvec);
-        nvbio::cuda::thrust_copy_vector(test.ref_dvec, ref_hvec);
+    thrust::device_vector<uint32> str_dvec( str );
+    thrust::device_vector<uint32> ref_dvec( ref );
+    thrust::device_vector<int16>  score_dvec( N_TASKS );
 
-        {
-            fprintf(stderr,"  testing Smith-Waterman scoring...\n");
-            aln::SimpleSmithWatermanScheme scoring;
-            scoring.m_match     =  2;
-            scoring.m_mismatch  = -1;
-            scoring.m_deletion  = -1;
-            scoring.m_insertion = -1;
+    fprintf(stderr,"  testing banded Smith-Waterman scoring speed...\n");
+    //Also aln::SEMI_GLOBAL, aln::GLOBAL
+    fprintf(stderr,"    %15s : ", "local");
+    batch_banded_score_profile_all<BAND_LEN,N,M>(
+        make_smith_waterman_aligner<aln::LOCAL>( aln::SimpleSmithWatermanScheme(2,-1,-1,-1) ),
+        N_TASKS,
+        str_dvec,
+        ref_dvec,
+        score_dvec
+    );
 
-            // test.full<BLOCKDIM,N,M>(      "global",  make_smith_waterman_aligner<aln::GLOBAL>( scoring ),      "1M2D3M1D3M10D" );
-            // test.full<BLOCKDIM,N,M>(       "local",  make_smith_waterman_aligner<aln::LOCAL>( scoring ),       "4M1D3M" );
-            // test.full<BLOCKDIM,N,M>( "semi-global",  make_smith_waterman_aligner<aln::SEMI_GLOBAL>( scoring ), "4M1D3M" );
-            test.banded<BLOCKDIM, 7u, N, M>( "banded-local", make_smith_waterman_aligner<aln::LOCAL>( scoring ), "4M1D3M" );
-        }
-    }
-
-    {
-        const uint32 BAND_LEN = 15u;
-        const uint32 N_TASKS  = N_THREAD_TASKS;
-        const uint32 M = 150;
-        const uint32 N = M+BAND_LEN;
-
-        const uint32 M_WORDS = (M + 7)  >> 3;
-        const uint32 N_WORDS = (N + 15) >> 4;
-
-        thrust::host_vector<uint32> str( M_WORDS * N_TASKS );
-        thrust::host_vector<uint32> ref( N_WORDS * N_TASKS );
-
-        LCG_random rand;
-        fill_packed_stream<4u>( rand, 4u, M * N_TASKS, nvbio::raw_pointer( str ) );
-        fill_packed_stream<2u>( rand, 4u, N * N_TASKS, nvbio::raw_pointer( ref ) );
-
-        thrust::device_vector<uint32> str_dvec( str );
-        thrust::device_vector<uint32> ref_dvec( ref );
-        thrust::device_vector<int16>  score_dvec( N_TASKS );
-
-        {
-            fprintf(stderr,"  testing banded Smith-Waterman scoring speed...\n");
-            //Also aln::SEMI_GLOBAL, aln::GLOBAL
-            fprintf(stderr,"    %15s : ", "local");
-            {
-                batch_banded_score_profile_all<BAND_LEN,N,M>(
-                    make_smith_waterman_aligner<aln::LOCAL>( aln::SimpleSmithWatermanScheme(2,-1,-1,-1) ),
-                    n_tests,
-                    N_TASKS,
-                    str_dvec,
-                    ref_dvec,
-                    score_dvec );
-            }
-        }
-    }
-    fprintf(stderr,"testing alignment... done\n");
+    return 0;
 }
