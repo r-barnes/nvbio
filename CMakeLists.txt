@@ -128,6 +128,8 @@ add_subdirectory(nvMicroAssembly)
 add_subdirectory(sufsort-test)
 add_subdirectory(sw-benchmark)
 
+add_subdirectory(richard)
+
 add_subdirectory(examples/waveletfm)
 add_subdirectory(examples/proteinsw)
 add_subdirectory(examples/seeding)
